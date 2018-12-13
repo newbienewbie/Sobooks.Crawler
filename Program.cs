@@ -12,6 +12,7 @@ using Microsoft.Extensions.Configuration;
 using RestSharp;
 using LiteDB;
 using System.IO;
+using SoBooksCrawler.Workflow;
 
 namespace SoBooksCrawler
 {
@@ -34,10 +35,21 @@ namespace SoBooksCrawler
 
             var services = p.ConfigureServices();
             p.ServiceProvider = services.BuildServiceProvider();
-            
-            var mw= p.BuildDelegate();
-            mw(new CrawlerContext())
-                .Wait();
+
+            var factory = new SoBooksCrawler.Workflow.CrawlerTaskFactory(p.ServiceProvider,"https://sobooks.cc");
+            List<CrawlerTask> crawlerTaskList = new List<CrawlerTask>();
+            crawlerTaskList.Add(factory.Create("task1",1,2));
+            crawlerTaskList.Add(factory.Create("task2",2,32));
+            crawlerTaskList.Add(factory.Create("task3",32,62));
+            crawlerTaskList.Add(factory.Create("task4",62,92));
+            crawlerTaskList.Add(factory.Create("task5",92,122));
+            crawlerTaskList.Add(factory.Create("task6",122,152));
+            crawlerTaskList.Add(factory.Create("task7",152,null));
+
+            Parallel.ForEach(crawlerTaskList.Select(t => t.BuildDelegate()),(d)=>{
+                d(new CrawlerContext());
+            });
+
         }
 
         public IServiceCollection ConfigureServices(){
@@ -47,62 +59,5 @@ namespace SoBooksCrawler
             return sc;
         }
 
-
-        public WorkDelegate<CrawlerContext> BuildDelegate(){
-
-            var container =  new WorkContainer<CrawlerContext>();
-            // initialize 
-            return container.Use(async (ctx,next) =>{
-                Console.WriteLine("Crawler starts !");
-                ctx.NextPage = "/";
-                await next();
-            })
-            // loop and when to terminate
-            .Use(async (ctx , next ) => {
-                while (! String.IsNullOrEmpty( ctx.NextPage )){
-                    await next();
-                }
-                System.Console.WriteLine("Done!");
-            })
-            // how to process list page
-            .Use(async (ctx , next ) =>{
-                Console.WriteLine(ctx.NextPage);
-                var api= this.ServiceProvider.GetRequiredService<ApiClient>();
-                var response = api.GetResponse(ctx.NextPage);
-                var parser = new CategoryPageParser(response.Content);
-                var items = parser.ParseDetailPageLinks();
-                var nextPage = parser.ParseNextPage();
-                if( !String.IsNullOrEmpty(nextPage) && nextPage.StartsWith(CrawlerContext.BaseUrl+"/")){
-                    nextPage = nextPage.Substring((CrawlerContext.BaseUrl+"/").Length);
-                }
-                Console.WriteLine(nextPage);
-                ctx.NextPage = nextPage;
-                ctx.ItemLinks = items.Select(i => i.PageUrl).ToList();
-                await next();
-            })
-            // how to deal with detail page
-            .Use(async(ctx ,next)=>{
-                var api= this.ServiceProvider.GetRequiredService<ApiClient>();
-                var nextPage = ctx.NextPage;
-                foreach(var href in ctx.ItemLinks){
-                    var response= api.PostToRetrievePassword(href ,"2018919");
-                    var parser = new DetailPageParser(response.Content);
-                    var detail = parser.ParseDetail();
-                    var password = parser.ParsePasswrod();
-                    detail.PageUrl = href;
-                    detail.Password = password;
-                    using( var db = new LiteDatabase(@"MyDataBase.db")){
-                        var col = db.GetCollection<ItemDetail>("itemDetail");
-                        col.EnsureIndex(x => x.ISBN);
-                        col.EnsureIndex(x=>x.PageUrl);
-                        col.EnsureIndex(x=>x.Title);
-                        col.Upsert(detail);
-                    }
-                    Console.WriteLine($"Got: {detail.Title}:{detail.ISBN}-{detail.Password}");
-                }
-            })
-            .Build();
-
-        }
     }
 }
